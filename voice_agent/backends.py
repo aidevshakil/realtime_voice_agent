@@ -1,14 +1,3 @@
-"""Where the conversation's audio comes from and goes to.
-
-The engine doesn't care whether it's talking to a local sound card or a browser on the other
-side of the network — it just needs somewhere to get utterances and somewhere to send speech.
-
-  LocalAudioBackend    — the machine running Streamlit: sounddevice in, sounddevice out.
-  BrowserAudioBackend  — a browser over WebRTC: mic frames in, reply frames back down the same
-                         connection. The only option when the app isn't running on your machine,
-                         and it gets the browser's echo cancellation for free.
-"""
-
 import threading
 import time
 
@@ -29,7 +18,6 @@ class LocalAudioBackend:
         self.error = None
 
     name = "local"
-    #  the local mic can hear the local speakers, so half-duplex mode has to mute it
     can_mute_input = True
 
     def start(self, on_utterance, on_speech_confirmed):
@@ -37,7 +25,7 @@ class LocalAudioBackend:
         self._on_speech_confirmed = on_speech_confirmed
         self._stop.clear()
         self._speaker = Speaker()
-        self._speaker.warm()  # pay the device-open cost now, not on the first spoken sentence
+        self._speaker.warm()
         self._thread = threading.Thread(target=self._capture_loop, name="voice-capture", daemon=True)
         self._thread.start()
 
@@ -49,7 +37,6 @@ class LocalAudioBackend:
             return
         try:
             while not self._stop.is_set():
-                # short timeout so a stop request is noticed promptly between utterances
                 for utterance in self._listener.listen(
                     timeout_s=0.5, on_speech_confirmed=self._on_speech_confirmed
                 ):
@@ -95,17 +82,9 @@ class LocalAudioBackend:
 
 
 class BrowserAudioBackend:
-    """Bridges the engine to a WebRTC audio track.
-
-    `process_frame` is called by streamlit-webrtc for every inbound frame from the browser, on
-    its own worker thread. Inbound audio is resampled to 16 kHz mono and segmented; the frame
-    returned goes back to the browser, so that is where the reply is written. Frames are always
-    returned with the same shape and duration as they arrived — silence when there's nothing to
-    say — because anything else desynchronizes the stream.
-    """
 
     name = "browser"
-    can_mute_input = False  # the browser's own echo cancellation handles the loop
+    can_mute_input = False
 
     def __init__(self, aggressiveness=2):
         self.aggressiveness = aggressiveness
@@ -114,12 +93,11 @@ class BrowserAudioBackend:
         self._on_utterance = None
         self._on_speech_confirmed = None
         self._resampler = None
-        self._in_buffer = bytearray()   # 16 kHz mono PCM16 awaiting a full VAD frame
-        self._out_buffer = bytearray()  # 16 kHz mono PCM16 waiting to be sent to the browser
+        self._in_buffer = bytearray()
+        self._out_buffer = bytearray()
         self._out_lock = threading.Lock()
         self._connected = threading.Event()
 
-    # -- engine side -------------------------------------------------------------------
 
     def start(self, on_utterance, on_speech_confirmed):
         self._on_utterance = on_utterance
@@ -133,8 +111,7 @@ class BrowserAudioBackend:
         self._segmenter = None
 
     def play(self, path: str):
-        """Decode the clip straight into the outbound buffer — there is no local device to
-        play it on; the frames go back to the browser."""
+       
         try:
             data, rate = read_wav(path)
             pcm = _resample_int16(data, rate, 16000).tobytes()
@@ -163,7 +140,7 @@ class BrowserAudioBackend:
             time.sleep(0.03)
 
     def mute_input(self, muted: bool):
-        pass  # nothing to mute: the browser cancels its own echo
+        pass
 
     @property
     def connected(self) -> bool:
@@ -173,7 +150,6 @@ class BrowserAudioBackend:
         if self._on_speech_confirmed:
             self._on_speech_confirmed()
 
-    # -- WebRTC side -------------------------------------------------------------------
 
     def process_frame(self, frame):
         """Called per inbound frame on streamlit-webrtc's worker thread."""
@@ -186,7 +162,7 @@ class BrowserAudioBackend:
                 self._resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
             for resampled in self._resampler.resample(frame):
                 self._in_buffer.extend(bytes(resampled.planes[0]))
-        except Exception as exc:  # never let a bad frame kill the connection
+        except Exception as exc:
             self.error = f"Inbound audio failed — {type(exc).__name__}: {exc}"
 
         while len(self._in_buffer) >= FRAME_BYTES and self._segmenter is not None:
@@ -199,7 +175,6 @@ class BrowserAudioBackend:
         return self._outbound_frame(frame, av, np)
 
     def _outbound_frame(self, frame, av, np):
-        """Build the reply frame: same layout, rate and sample count as `frame`."""
         rate = frame.sample_rate
         channels = len(frame.layout.channels)
         samples = frame.samples
@@ -211,7 +186,7 @@ class BrowserAudioBackend:
             del self._out_buffer[:take]
 
         mono16k = np.frombuffer(chunk, dtype=np.int16)
-        if len(mono16k) < needed_16k:  # pad the tail of a clip with silence
+        if len(mono16k) < needed_16k:
             mono16k = np.concatenate(
                 [mono16k, np.zeros(needed_16k - len(mono16k), dtype=np.int16)]
             )
@@ -237,11 +212,9 @@ def _fit(samples, length, np):
 
 
 def _resample_int16(data, from_rate: int, to_rate: int):
-    """Linear resample of mono int16. Good enough for speech, and dependency-free — the
-    alternative is threading an av.AudioResampler's own buffering into the output path."""
     import numpy as np
 
-    if data.ndim > 1:  # mix any multi-channel clip down to mono
+    if data.ndim > 1:
         data = data.mean(axis=1).astype(np.int16)
     if from_rate == to_rate or len(data) == 0:
         return np.asarray(data, dtype=np.int16)

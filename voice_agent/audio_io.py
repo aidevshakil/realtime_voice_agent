@@ -13,7 +13,7 @@ import wave
 
 import sounddevice as sd
 
-with warnings.catch_warnings():  # webrtcvad imports the deprecated pkg_resources; pinned in requirements
+with warnings.catch_warnings():
     warnings.filterwarnings("ignore", message=".*pkg_resources is deprecated.*")
     import webrtcvad
 
@@ -28,7 +28,7 @@ from voice_agent.config import (
     VAD_AGGRESSIVENESS,
 )
 
-FRAME_BYTES = int(SAMPLE_RATE * FRAME_MS / 1000) * 2  # 16-bit mono samples
+FRAME_BYTES = int(SAMPLE_RATE * FRAME_MS / 1000) * 2
 
 
 def rms(pcm_bytes: bytes) -> float:
@@ -56,21 +56,6 @@ def list_input_devices() -> list[tuple[int, str]]:
 
 
 class VadSegmenter:
-    """Turns a stream of 30 ms PCM16 frames into utterances.
-
-    Speech starts once most of a rolling window is voiced and ends once most of it isn't, so a
-    single noisy frame neither triggers nor terminates a turn. Shared by the local microphone
-    and the browser (WebRTC) path so both segment speech identically.
-
-    Two gates keep noise out of the transcript. A frame only counts as speech if VAD says so
-    *and* it clears `min_frame_rms`, and a finished utterance is only returned if it clears
-    `min_utterance_rms` overall — without those, quiet room noise and the agent's own voice
-    leaking back in reach Whisper, which answers with fluent hallucinations rather than silence.
-
-    `on_speech_confirmed` fires once per utterance, after `barge_in_ms` of speech has actually
-    accumulated. That delay is deliberate: it's the barge-in signal, and firing it on the first
-    triggered frame lets any stray sound cut the agent off mid-word.
-    """
 
     def __init__(
         self,
@@ -93,7 +78,7 @@ class VadSegmenter:
         self._ring = collections.deque(maxlen=max(1, int(padding_ms / FRAME_MS)))
         self.triggered = False
         self._voiced = []
-        self._speech_ms = 0  # only frames VAD called speech, excluding the silence padding
+        self._speech_ms = 0
         self._confirmed = False
 
     def reset(self):
@@ -258,7 +243,7 @@ def play_audio_file(path: str):
     cmd = _player_cmd(path)
     returncode = subprocess.run(cmd).returncode
     if returncode < 0:
-        return  # player killed by a signal (Ctrl+C reaches the whole process group) — just stop the clip
+        return
     if returncode != 0:
         raise RuntimeError(f"Playback failed: {cmd[0]} exited with {returncode}")
 
@@ -290,7 +275,7 @@ class Speaker:
     the external player if the clip can't be decoded here.
     """
 
-    BLOCK_FRAMES = 1024  # write granularity — also how often an interrupt is noticed
+    BLOCK_FRAMES = 1024
 
     def __init__(self, delete_after=True):
         self._queue = queue.Queue()
@@ -298,8 +283,8 @@ class Speaker:
         self._lock = threading.Lock()
         self._pending = 0
         self._proc = None
-        self._stream = None       # persistent output stream, opened on the first clip
-        self._stream_spec = None  # (samplerate, channels) it was opened with
+        self._stream = None
+        self._stream_spec = None
         self._skip = threading.Event()
         self._closed = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -331,7 +316,7 @@ class Speaker:
             stream, proc = self._stream, self._proc
         if stream is not None:
             with contextlib.suppress(Exception):
-                stream.abort()  # discard buffered audio instead of draining it
+                stream.abort()
         if proc and proc.poll() is None:
             proc.terminate()
 
@@ -359,10 +344,10 @@ class Speaker:
             path = self._queue.get()
             if path is None:
                 return
-            self._skip.clear()  # a fresh clip is never born interrupted
+            self._skip.clear()
             try:
                 self._play(path)
-            except Exception as exc:  # a dead player shouldn't take the conversation with it
+            except Exception as exc:
                 print(f"[audio] playback failed: {exc}", file=sys.stderr)
             finally:
                 with self._lock:
@@ -374,7 +359,7 @@ class Speaker:
     def _play(self, path: str):
         try:
             data, rate = read_wav(path)
-        except Exception:  # not a plain 16-bit WAV — let the system player deal with it
+        except Exception:
             self._play_external(path)
             return
 
@@ -387,10 +372,7 @@ class Speaker:
                 stream.write(data[start : start + self.BLOCK_FRAMES])
         except Exception as exc:
             if self._skip.is_set() or self._closed.is_set():
-                return  # abort() during a blocked write — expected
-            # The audio device can fail transiently (virtual devices, a device switching
-            # underneath us). Drop the stream so the next clip reopens it, and don't lose
-            # this sentence — hand it to the system player.
+                return
             print(f"[audio] output stream failed ({exc}); falling back to the system player",
                   file=sys.stderr)
             self._drop_stream()
@@ -432,15 +414,13 @@ class Speaker:
             try:
                 stream = sd.OutputStream(samplerate=rate, channels=channels, dtype="int16")
             except Exception:
-                # one retry: opening a virtual device right after another stream closed can
-                # fail once and then succeed
                 sd._terminate()
                 sd._initialize()
                 stream = sd.OutputStream(samplerate=rate, channels=channels, dtype="int16")
             with self._lock:
                 self._stream, self._stream_spec = stream, spec
         if not stream.active:
-            stream.start()  # abort() stops it; restart for the next clip
+            stream.start()
         return stream
 
 
