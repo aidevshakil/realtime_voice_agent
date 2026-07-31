@@ -1,20 +1,3 @@
-"""Always-on voice conversation loop.
-
-Runs entirely off the UI thread so it can behave like a phone call rather than a form:
-the mic stays open, the LLM's reply is spoken sentence-by-sentence while it is still being
-generated, and talking over the agent cuts it off mid-word.
-
-Two threads:
-
-  capture  — owns the microphone, segments speech with VAD, pushes utterances onto a queue,
-             and fires the barge-in signal the moment someone starts talking.
-  process  — pulls utterances, transcribes, streams the reply, synthesizes each sentence as
-             it lands and hands it to the Speaker.
-
-Everything the UI needs is exposed through `snapshot()` and the shared `Transcript`; the UI
-never touches engine internals, and the engine never touches Streamlit.
-"""
-
 import queue
 import re
 import sys
@@ -25,7 +8,7 @@ import traceback
 from voice_agent.asr import transcribe
 from voice_agent.audio_io import pcm_to_wav_bytes
 from voice_agent.backends import BrowserAudioBackend, LocalAudioBackend
-from voice_agent.transcript import Transcript  # re-exported: engine callers need both
+from voice_agent.transcript import Transcript
 from voice_agent.tts import discard, synthesize_to_file
 
 __all__ = [
@@ -43,10 +26,8 @@ THINKING = "thinking"
 SPEAKING = "speaking"
 STOPPED = "stopped"
 
-# Speak as soon as a sentence is complete. Below this length we wait for more text — one-word
-# fragments make the speech choppy and cost a synthesis round-trip each.
 MIN_CHUNK_CHARS = 24
-MAX_CHUNK_CHARS = 220  # a run-on sentence shouldn't delay the first audio forever
+MAX_CHUNK_CHARS = 220
 _SENTENCE_END = re.compile(r"(?<=[.!?…])\s+|(?<=\n)")
 
 
@@ -64,7 +45,6 @@ def split_speakable(buffer: str, force: bool = False) -> tuple[list[str], str]:
             break
         candidate, tail = rest[: match.end()], rest[match.end():]
         if len(candidate.strip()) < MIN_CHUNK_CHARS and tail:
-            # too short to be worth its own clip — let it grow, unless nothing follows
             later = _SENTENCE_END.search(tail)
             if later:
                 rest = candidate + tail
@@ -106,7 +86,6 @@ class ConversationEngine:
     ):
         self.agent = agent
         self.transcript = transcript
-        # default to the local sound card; pass a BrowserAudioBackend to run over WebRTC instead
         self.backend = backend or LocalAudioBackend(
             device=device, aggressiveness=aggressiveness
         )
@@ -118,7 +97,7 @@ class ConversationEngine:
 
         self._state = IDLE
         self._state_lock = threading.Lock()
-        self._reply_index = None  # transcript slot for the reply in flight
+        self._reply_index = None
         self._partial = ""
         self._error = None
         self._last_timings = {}
@@ -129,7 +108,6 @@ class ConversationEngine:
         self._interrupt = threading.Event()
         self._thread = None
 
-    # -- lifecycle ---------------------------------------------------------------------
 
     @property
     def running(self) -> bool:
@@ -177,7 +155,6 @@ class ConversationEngine:
         with self._state_lock:
             self._partial = text
 
-    # -- barge-in ----------------------------------------------------------------------
 
     def _on_speech_confirmed(self):
         """Fires once the segmenter has heard sustained speech — not on the first triggered
@@ -191,7 +168,6 @@ class ConversationEngine:
             with self._state_lock:
                 self._interrupts += 1
 
-    # -- processing --------------------------------------------------------------------
 
     def _process_loop(self):
         while not self._stop.is_set():
@@ -201,7 +177,6 @@ class ConversationEngine:
                 continue
             if self._stop.is_set():
                 return
-            # only the newest utterance matters if we fell behind while speaking
             while not self._utterances.empty():
                 utterance = self._utterances.get_nowait()
             try:
@@ -238,7 +213,6 @@ class ConversationEngine:
         index = self.transcript.add({"role": "assistant", "text": "", "events": []})
         self._reply_index = index
 
-        # with barge-in off the mic is muted while the agent talks, so it can't hear itself
         half_duplex = not self.barge_in and self.backend.can_mute_input
         if half_duplex:
             self.backend.mute_input(True)
@@ -308,7 +282,7 @@ class ConversationEngine:
             print(f"[tts] {type(exc).__name__}: {exc}", file=sys.stderr)
             return False
         try:
-            self.backend.play(path)  # the backend owns the file from here
+            self.backend.play(path)
         except Exception as exc:
             discard(path)
             print(f"[audio] {type(exc).__name__}: {exc}", file=sys.stderr)

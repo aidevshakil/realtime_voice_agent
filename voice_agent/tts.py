@@ -16,7 +16,6 @@ def list_voices() -> list[str]:
             out = subprocess.run(["say", "-v", "?"], capture_output=True, text=True, timeout=10)
             names = []
             for line in out.stdout.splitlines():
-                # "Samantha            en_US    # Hello, my name is Samantha."
                 name = line.split("  ")[0].strip()
                 if name:
                     names.append(name)

@@ -2,11 +2,7 @@ import threading
 
 
 class Transcript:
-    """Thread-safe conversation log shared between the engine thread and the UI.
 
-    Lives apart from `conversation` so the UI can hold a transcript without importing the audio
-    stack — a machine with no PortAudio should still get the browser recorder and text box.
-    """
 
     def __init__(self):
         self._lock = threading.Lock()

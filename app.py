@@ -1,17 +1,3 @@
-"""Streamlit web interface for the real-time voice agent.
-
-Run with:  streamlit run app.py
-
-Two ways to talk to it:
-
-  Live mode — a background thread owns the mic and the speaker, so the conversation runs at
-  audio speed instead of page speed: the agent starts talking before it has finished thinking,
-  and you can cut it off mid-sentence. The page is a live view onto that thread.
-
-  Manual mode — browser recorder or text box, one turn at a time. Works over the network,
-  where live mode can't (its microphone is the server's).
-"""
-
 import hashlib
 import json
 import time
@@ -23,15 +9,14 @@ from voice_agent import config, tools, tts
 from voice_agent.asr import transcribe
 from voice_agent.config import MissingCredentials
 from voice_agent.llm import VoiceAgent
-from voice_agent.transcript import Transcript  # audio-free, so this import can't fail
+from voice_agent.transcript import Transcript
 
-# sounddevice needs PortAudio; without it the browser recorder still works, so degrade instead of crash.
 try:
     from voice_agent.audio_io import list_input_devices, pcm_to_wav_bytes
     from voice_agent.conversation import BrowserAudioBackend, ConversationEngine
 
     MIC_IMPORT_ERROR = None
-except Exception as exc:  # pragma: no cover - depends on the host machine
+except Exception as exc:
     list_input_devices = pcm_to_wav_bytes = ConversationEngine = BrowserAudioBackend = None
     MIC_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
@@ -39,15 +24,13 @@ try:
     from streamlit_webrtc import WebRtcMode, webrtc_streamer
 
     WEBRTC_ERROR = None
-except Exception as exc:  # pragma: no cover - optional dependency
+except Exception as exc:
     webrtc_streamer = WebRtcMode = None
     WEBRTC_ERROR = f"{type(exc).__name__}: {exc}"
 
 BROWSER_MIC = "Browser microphone (works from any machine)"
 SERVER_MIC = "This machine's microphone"
 
-# Ask the browser for the processing that makes open speakers usable: it cancels the echo of the
-# agent's own voice, which the server-mic path has no way to do.
 AUDIO_CONSTRAINTS = {
     "echoCancellation": True,
     "noiseSuppression": True,
@@ -85,16 +68,12 @@ STATE_BADGES = {
 st.set_page_config(page_title="Real-Time Voice Agent", page_icon="🎙️", layout="wide")
 
 
-# --------------------------------------------------------------------------------------
-# session state
-# --------------------------------------------------------------------------------------
-
 def init_state():
     ss = st.session_state
     ss.setdefault("transcript", Transcript())
     ss.setdefault("agent", None)
     ss.setdefault("engine", None)
-    ss.setdefault("rec_nonce", 0)      # bumped to reset the browser recorder widget
+    ss.setdefault("rec_nonce", 0)
     ss.setdefault("last_audio_hash", None)
 
 
@@ -119,10 +98,6 @@ def live_engine():
     return engine if engine and engine.running else None
 
 
-# --------------------------------------------------------------------------------------
-# sidebar
-# --------------------------------------------------------------------------------------
-
 def render_sidebar() -> dict:
     with st.sidebar:
         st.header("⚙️ Settings")
@@ -140,7 +115,7 @@ def render_sidebar() -> dict:
             )
             if key_input:
                 config.set_groq_api_key(key_input)
-                st.session_state.agent = None  # rebuild against the new key
+                st.session_state.agent = None
 
         st.subheader("🧠 Model")
         model = st.selectbox("LLM", MODELS, index=0)
@@ -245,10 +220,6 @@ def render_sidebar() -> dict:
     }
 
 
-# --------------------------------------------------------------------------------------
-# live mode
-# --------------------------------------------------------------------------------------
-
 def start_live(settings, backend=None):
     agent = get_agent(settings)
     engine = ConversationEngine(
@@ -268,8 +239,7 @@ def start_live(settings, backend=None):
 
 
 def browser_backend(settings):
-    """One backend per session, kept across reruns — the WebRTC worker calls into it from its
-    own thread, so it must outlive the script run that created it."""
+    
     backend = st.session_state.get("browser_backend")
     if backend is None:
         backend = BrowserAudioBackend(aggressiveness=settings["aggressiveness"])
@@ -278,8 +248,6 @@ def browser_backend(settings):
 
 
 def sync_live_settings(settings):
-    """Push the settings that can change without reopening the audio devices."""
-    engine = live_engine()
     if not engine:
         return
     engine.language = settings["language"]
@@ -287,7 +255,7 @@ def sync_live_settings(settings):
     engine.rate = settings["rate"]
     engine.barge_in = settings["barge_in"]
     engine.speak = settings["speak"]
-    get_agent(settings)  # model / prompt / tool changes apply to the shared agent
+    get_agent(settings)
 
 
 def render_live_status():
@@ -317,10 +285,6 @@ def render_live_status():
         st.caption(f"💭 {snap['partial']}")
 
 
-# --------------------------------------------------------------------------------------
-# manual turns
-# --------------------------------------------------------------------------------------
-
 def run_turn(text: str, settings: dict, user_audio: bytes | None = None, asr_ms: float = 0.0):
     """One non-live turn: agent replies, and the reply is returned as an inline audio player."""
     transcript = st.session_state.transcript
@@ -344,7 +308,7 @@ def run_turn(text: str, settings: dict, user_audio: bytes | None = None, asr_ms:
                     reply, voice=settings["voice"], rate=settings["rate"]
                 )
                 entry["timings"]["tts_ms"] = (time.perf_counter() - started) * 1000
-            except Exception as exc:  # a broken voice shouldn't lose the text reply
+            except Exception as exc:
                 entry["tts_error"] = f"{type(exc).__name__}: {exc}"
     except MissingCredentials as exc:
         entry["text"] = str(exc)
@@ -364,10 +328,6 @@ def transcribe_audio(wav_bytes: bytes, settings: dict) -> tuple[str, float]:
     text = transcribe(wav_bytes, language=settings["language"])
     return text, (time.perf_counter() - started) * 1000
 
-
-# --------------------------------------------------------------------------------------
-# rendering
-# --------------------------------------------------------------------------------------
 
 def render_message(msg: dict, autoplay: bool):
     with st.chat_message(msg["role"]):
@@ -438,7 +398,7 @@ def render_browser_controls(settings: dict):
     try:
         ctx = webrtc_streamer(
             key="voice-agent",
-            mode=WebRtcMode.SENDRECV,  # send the mic up, get the agent's voice back down
+            mode=WebRtcMode.SENDRECV,
             audio_frame_callback=backend.process_frame,
             media_stream_constraints={"video": False, "audio": AUDIO_CONSTRAINTS},
             rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
@@ -542,7 +502,7 @@ def render_chat_tab(settings: dict):
                     run_turn(text, settings, user_audio=wav_bytes, asr_ms=asr_ms)
             else:
                 st.warning("Nothing recognizable in that recording — try again.")
-            st.session_state.rec_nonce += 1  # clears the recorder for the next take
+            st.session_state.rec_nonce += 1
             st.rerun()
 
     if typed:
@@ -683,8 +643,6 @@ The terminal version is still there: `python main.py`.
 """
     )
 
-
-# --------------------------------------------------------------------------------------
 
 def main():
     init_state()

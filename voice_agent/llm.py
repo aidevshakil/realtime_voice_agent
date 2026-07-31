@@ -8,10 +8,8 @@ from voice_agent.tools import TOOL_DECLARATIONS, TOOLS
 
 MALFORMED_REPLY = "Sorry, I garbled that one. Could you say it again?"
 
-# Groq validates the model's generated tool call server-side and rejects a mangled one mid-stream.
-# It's a sampling fluke, so the same request usually succeeds on a retry.
 _MALFORMED_MARKERS = ("failed to call a function", "tool call validation failed")
-_MAX_TOOL_RETRIES = 3  # last attempt drops tools entirely so the user still gets an answer
+_MAX_TOOL_RETRIES = 3
 
 
 def _is_malformed_tool_call(exc) -> bool:
@@ -20,12 +18,7 @@ def _is_malformed_tool_call(exc) -> bool:
 
 
 def _valid_tool_calls(tool_calls):
-    """Drop calls naming a tool that doesn't exist.
-
-    Models occasionally emit a mangled function name (the arguments spliced into the name, say).
-    Echoing that back in the next request makes the API reject the *whole conversation* from then
-    on — 'attempted to call tool X which was not in tools' — so it never reaches history.
-    """
+    
     return [c for c in tool_calls if c["function"]["name"] in TOOLS]
 
 
@@ -37,16 +30,12 @@ def _tools_schema(names=None):
 
 
 class VoiceAgent:
-    """Holds the conversation and runs the tool-calling loop.
-
-    `on_event`, if given, is called with a dict per tool call — the web UI uses it to show
-    what the model actually did during a turn.
-    """
+   
 
     def __init__(self, model=None, system_prompt=None, enabled_tools=None, on_event=None):
         self.model = model or llm_model()
         self.system_prompt = system_prompt or SYSTEM_INSTRUCTION
-        self.enabled_tools = enabled_tools  # None means "all tools"
+        self.enabled_tools = enabled_tools
         self.on_event = on_event
         self._messages = [{"role": "system", "content": self.system_prompt}]
 
@@ -58,8 +47,7 @@ class VoiceAgent:
         self._messages = [{"role": "system", "content": self.system_prompt}]
 
     def configure(self, model=None, system_prompt=None, enabled_tools=None):
-        """Apply setting changes mid-conversation. A new system prompt rewrites the existing
-        system message so it takes effect on the very next turn."""
+       
         if model:
             self.model = model
         if enabled_tools is not None:
@@ -74,21 +62,11 @@ class VoiceAgent:
         try:
             return self._resolve()
         except Exception:
-            # roll back so a failed turn can't leave tool_calls without their results,
-            # which the API rejects on every subsequent turn
             del self._messages[checkpoint:]
             raise
 
     def stream_respond(self, user_text: str, interrupt=None):
-        """Same as respond(), but yields the reply as it is generated.
-
-        Yields dicts: {"type": "text", "value": <token chunk>} and
-        {"type": "tool", "tool": name, "args": {...}, "result": str}.
-
-        `interrupt` is an optional threading.Event — when it gets set the stream is abandoned
-        and whatever was said so far is committed to history, so the conversation stays coherent
-        after the user talks over the agent.
-        """
+        
         checkpoint = len(self._messages)
         self._messages.append({"role": "user", "content": user_text})
         try:
@@ -102,7 +80,6 @@ class VoiceAgent:
             self.on_event(event)
 
     def _run_tools(self, tool_calls):
-        """Execute assembled tool calls, appending each result to history. Yields UI events."""
         for call in tool_calls:
             name = call["function"]["name"]
             fn = TOOLS.get(name)
@@ -110,7 +87,7 @@ class VoiceAgent:
             if not fn:
                 result = f"Unknown tool: {name}"
             else:
-                try:  # hand tool failures back to the model instead of killing the turn
+                try:
                     args = json.loads(call["function"]["arguments"] or "{}") or {}
                     result = fn(**args)
                 except Exception as exc:
@@ -124,14 +101,14 @@ class VoiceAgent:
 
     def _resolve_stream(self, interrupt=None):
         schema = _tools_schema(self.enabled_tools)
-        for _ in range(5):  # cap tool-call round-trips
+        for _ in range(5):
             content = ""
-            partials = {}  # index -> tool call being assembled across deltas
+            partials = {}
 
             for attempt in range(_MAX_TOOL_RETRIES):
                 content = ""
                 partials = {}
-                emitted = False  # once text has been spoken, retrying would repeat it
+                emitted = False
                 stream = None
                 kwargs = {"model": self.model, "messages": self._messages, "stream": True}
                 if schema:
@@ -167,7 +144,7 @@ class VoiceAgent:
                     if attempt == _MAX_TOOL_RETRIES - 1:
                         raise
                     if attempt == _MAX_TOOL_RETRIES - 2:
-                        schema = []  # it keeps mangling the call — answer without tools
+                        schema = []
                 finally:
                     if stream is not None:
                         with contextlib.suppress(Exception):
@@ -187,7 +164,7 @@ class VoiceAgent:
                     for _, slot in sorted(partials.items())
                 ]
             )
-            if not tool_calls:  # every call was malformed — salvage the turn as plain text
+            if not tool_calls:
                 text = content or MALFORMED_REPLY
                 self._messages.append({"role": "assistant", "content": text})
                 if not content:
@@ -204,12 +181,10 @@ class VoiceAgent:
         yield {"type": "text", "value": final}
 
     def _complete(self, schema):
-        """One non-streaming request, retrying a server-rejected malformed tool call.
-        Returns (completion, schema) — the schema may come back empty if tools had to be
-        dropped to get an answer at all."""
+       
         for attempt in range(_MAX_TOOL_RETRIES):
             kwargs = {"model": self.model, "messages": self._messages}
-            if schema:  # sending an empty tools list is rejected; omit it instead
+            if schema:
                 kwargs["tools"] = schema
                 kwargs["tool_choice"] = "auto"
             try:
@@ -222,7 +197,7 @@ class VoiceAgent:
 
     def _resolve(self) -> str:
         schema = _tools_schema(self.enabled_tools)
-        for _ in range(5):  # cap tool-call round-trips
+        for _ in range(5):
             completion, schema = self._complete(schema)
             message = completion.choices[0].message
             payload = message.model_dump(exclude_none=True)
@@ -232,7 +207,7 @@ class VoiceAgent:
                 return (message.content or "").strip()
 
             tool_calls = _valid_tool_calls(payload.get("tool_calls", []))
-            if not tool_calls:  # every call was malformed — salvage the turn as plain text
+            if not tool_calls:
                 text = (message.content or "").strip() or MALFORMED_REPLY
                 self._messages.append({"role": "assistant", "content": text})
                 return text

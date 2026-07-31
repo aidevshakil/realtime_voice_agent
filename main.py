@@ -8,7 +8,7 @@ from voice_agent.llm import VoiceAgent
 
 def main():
     try:
-        groq_api_key()  # fail fast with a readable message instead of mid-conversation
+        groq_api_key()
     except MissingCredentials as exc:
         print(f"[config] {exc}", file=sys.stderr)
         return 1
@@ -27,7 +27,6 @@ def main():
                 return 1
 
             entries = transcript.snapshot()
-            # a reply is filled in as it streams, so only print entries that are settled
             settled = len(entries) if snapshot["state"] == "listening" else len(entries) - 1
             for entry in entries[printed:settled]:
                 who = "You" if entry["role"] == "user" else "Agent"
