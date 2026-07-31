@@ -18,14 +18,29 @@ with warnings.catch_warnings():  # webrtcvad imports the deprecated pkg_resource
     import webrtcvad
 
 from voice_agent.config import (
+    BARGE_IN_MS,
     FRAME_MS,
     MAX_UTTERANCE_MS,
+    MIN_FRAME_RMS,
     MIN_UTTERANCE_MS,
+    MIN_UTTERANCE_RMS,
     SAMPLE_RATE,
     VAD_AGGRESSIVENESS,
 )
 
 FRAME_BYTES = int(SAMPLE_RATE * FRAME_MS / 1000) * 2  # 16-bit mono samples
+
+
+def rms(pcm_bytes: bytes) -> float:
+    """Root-mean-square level of PCM16 audio, on the int16 scale (full scale 32768)."""
+    import numpy as np
+
+    if not pcm_bytes:
+        return 0.0
+    samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+    if not samples.size:
+        return 0.0
+    return float(np.sqrt(np.mean(samples * samples)))
 
 
 def list_input_devices() -> list[tuple[int, str]]:
@@ -46,6 +61,15 @@ class VadSegmenter:
     Speech starts once most of a rolling window is voiced and ends once most of it isn't, so a
     single noisy frame neither triggers nor terminates a turn. Shared by the local microphone
     and the browser (WebRTC) path so both segment speech identically.
+
+    Two gates keep noise out of the transcript. A frame only counts as speech if VAD says so
+    *and* it clears `min_frame_rms`, and a finished utterance is only returned if it clears
+    `min_utterance_rms` overall — without those, quiet room noise and the agent's own voice
+    leaking back in reach Whisper, which answers with fluent hallucinations rather than silence.
+
+    `on_speech_confirmed` fires once per utterance, after `barge_in_ms` of speech has actually
+    accumulated. That delay is deliberate: it's the barge-in signal, and firing it on the first
+    triggered frame lets any stray sound cut the agent off mid-word.
     """
 
     def __init__(
@@ -54,28 +78,36 @@ class VadSegmenter:
         padding_ms=300,
         ratio=0.75,
         min_utterance_ms=MIN_UTTERANCE_MS,
-        on_speech_start=None,
+        min_frame_rms=MIN_FRAME_RMS,
+        min_utterance_rms=MIN_UTTERANCE_RMS,
+        barge_in_ms=BARGE_IN_MS,
+        on_speech_confirmed=None,
     ):
         self._vad = webrtcvad.Vad(aggressiveness)
         self._ratio = ratio
         self._min_utterance_ms = min_utterance_ms
-        self.on_speech_start = on_speech_start
+        self._min_frame_rms = min_frame_rms
+        self._min_utterance_rms = min_utterance_rms
+        self._barge_in_ms = barge_in_ms
+        self.on_speech_confirmed = on_speech_confirmed
         self._ring = collections.deque(maxlen=max(1, int(padding_ms / FRAME_MS)))
         self.triggered = False
         self._voiced = []
         self._speech_ms = 0  # only frames VAD called speech, excluding the silence padding
+        self._confirmed = False
 
     def reset(self):
         self._ring.clear()
         self.triggered = False
         self._voiced = []
         self._speech_ms = 0
+        self._confirmed = False
 
     def push(self, frame: bytes):
         """Feed one frame. Returns a complete utterance (PCM16 bytes) when speech ends."""
         if len(frame) != FRAME_BYTES:
             return None
-        is_speech = self._vad.is_speech(frame, SAMPLE_RATE)
+        is_speech = self._vad.is_speech(frame, SAMPLE_RATE) and rms(frame) >= self._min_frame_rms
 
         if not self.triggered:
             self._ring.append((frame, is_speech))
@@ -85,21 +117,31 @@ class VadSegmenter:
                 self._voiced.extend(f for f, _ in self._ring)
                 self._speech_ms = voiced * FRAME_MS
                 self._ring.clear()
-                if self.on_speech_start:
-                    self.on_speech_start()
+                self._maybe_confirm()
             return None
 
         self._voiced.append(frame)
         self._ring.append((frame, is_speech))
         if is_speech:
             self._speech_ms += FRAME_MS
+            self._maybe_confirm()
         unvoiced = sum(1 for _, speech in self._ring if not speech)
         too_long = len(self._voiced) * FRAME_MS >= MAX_UTTERANCE_MS
         if unvoiced > self._ratio * self._ring.maxlen or too_long:
-            utterance = b"".join(self._voiced) if self._speech_ms >= self._min_utterance_ms else None
+            utterance = b"".join(self._voiced)
+            long_enough = self._speech_ms >= self._min_utterance_ms
+            loud_enough = rms(utterance) >= self._min_utterance_rms
             self.reset()
-            return utterance
+            return utterance if (long_enough and loud_enough) else None
         return None
+
+    def _maybe_confirm(self):
+        """Fire the barge-in signal the first time this utterance has enough real speech in it."""
+        if self._confirmed or self._speech_ms < self._barge_in_ms:
+            return
+        self._confirmed = True
+        if self.on_speech_confirmed:
+            self.on_speech_confirmed()
 
 
 class MicListener:
@@ -144,16 +186,16 @@ class MicListener:
     def resume(self):
         self._paused = False
 
-    def listen(self, timeout_s: float | None = None, on_speech_start=None):
+    def listen(self, timeout_s: float | None = None, on_speech_confirmed=None):
         """Yield utterances forever. If `timeout_s` is set, stop waiting after that many
         seconds of no speech starting — lets a web UI stay responsive between attempts.
         The clock only runs while idle; once someone starts talking they get to finish.
 
-        `on_speech_start` fires the moment VAD triggers, before the utterance has finished.
+        `on_speech_confirmed` fires part-way into an utterance, well before it has finished.
         That's the barge-in signal: it's what lets the agent stop talking as soon as you do,
         rather than after you've stopped."""
         self._stream.start()
-        segmenter = VadSegmenter(on_speech_start=on_speech_start, **self._segmenter_args)
+        segmenter = VadSegmenter(on_speech_confirmed=on_speech_confirmed, **self._segmenter_args)
         deadline = None if timeout_s is None else time.monotonic() + timeout_s
 
         while True:
