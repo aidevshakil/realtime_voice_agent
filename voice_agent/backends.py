@@ -25,16 +25,16 @@ class LocalAudioBackend:
         self._thread = None
         self._stop = threading.Event()
         self._on_utterance = None
-        self._on_speech_start = None
+        self._on_speech_confirmed = None
         self.error = None
 
     name = "local"
     #  the local mic can hear the local speakers, so half-duplex mode has to mute it
     can_mute_input = True
 
-    def start(self, on_utterance, on_speech_start):
+    def start(self, on_utterance, on_speech_confirmed):
         self._on_utterance = on_utterance
-        self._on_speech_start = on_speech_start
+        self._on_speech_confirmed = on_speech_confirmed
         self._stop.clear()
         self._speaker = Speaker()
         self._speaker.warm()  # pay the device-open cost now, not on the first spoken sentence
@@ -51,7 +51,7 @@ class LocalAudioBackend:
             while not self._stop.is_set():
                 # short timeout so a stop request is noticed promptly between utterances
                 for utterance in self._listener.listen(
-                    timeout_s=0.5, on_speech_start=self._on_speech_start
+                    timeout_s=0.5, on_speech_confirmed=self._on_speech_confirmed
                 ):
                     if self._stop.is_set():
                         return
@@ -112,7 +112,7 @@ class BrowserAudioBackend:
         self.error = None
         self._segmenter = None
         self._on_utterance = None
-        self._on_speech_start = None
+        self._on_speech_confirmed = None
         self._resampler = None
         self._in_buffer = bytearray()   # 16 kHz mono PCM16 awaiting a full VAD frame
         self._out_buffer = bytearray()  # 16 kHz mono PCM16 waiting to be sent to the browser
@@ -121,11 +121,11 @@ class BrowserAudioBackend:
 
     # -- engine side -------------------------------------------------------------------
 
-    def start(self, on_utterance, on_speech_start):
+    def start(self, on_utterance, on_speech_confirmed):
         self._on_utterance = on_utterance
-        self._on_speech_start = on_speech_start
+        self._on_speech_confirmed = on_speech_confirmed
         self._segmenter = VadSegmenter(
-            aggressiveness=self.aggressiveness, on_speech_start=self._speech_started
+            aggressiveness=self.aggressiveness, on_speech_confirmed=self._speech_confirmed
         )
 
     def stop(self):
@@ -169,9 +169,9 @@ class BrowserAudioBackend:
     def connected(self) -> bool:
         return self._connected.is_set()
 
-    def _speech_started(self):
-        if self._on_speech_start:
-            self._on_speech_start()
+    def _speech_confirmed(self):
+        if self._on_speech_confirmed:
+            self._on_speech_confirmed()
 
     # -- WebRTC side -------------------------------------------------------------------
 

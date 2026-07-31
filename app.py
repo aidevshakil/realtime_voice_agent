@@ -153,7 +153,15 @@ def render_sidebar() -> dict:
         enabled_tools = st.multiselect("Enabled", all_tools, default=all_tools)
 
         st.subheader("👂 Speech-to-text")
-        language_label = st.selectbox("Language", list(LANGUAGES), index=0)
+        language_label = st.selectbox(
+            "Language",
+            list(LANGUAGES),
+            index=0,
+            help="Auto-detect can guess wrong on short or noisy audio and transcribe you into "
+            "another language entirely. Naming your language stops that.",
+        )
+        if LANGUAGES[language_label] == "auto":
+            st.caption("Pick your language if transcripts come back in the wrong one.")
 
         st.subheader("🔊 Text-to-speech")
         speak = st.toggle("Speak replies", value=True)
@@ -637,7 +645,7 @@ thread owns the audio, so nothing waits on the page:
 
 | | |
 |---|---|
-| **Segmenter** | Watches 30 ms frames and marks where speech starts and ends. The instant it triggers it fires the barge-in signal — it doesn't wait for you to finish. |
+| **Segmenter** | Watches 30 ms frames and marks where speech starts and ends, gating on loudness as well as voice activity so room noise and speaker bleed don't become turns. Once it has heard ~400 ms of real speech it fires the barge-in signal — it doesn't wait for you to finish. |
 | **Process thread** | Transcribes the utterance (Groq Whisper), then **streams** the reply from the LLM. As each sentence completes it is synthesized and queued, so the agent starts speaking while the rest of the answer is still being generated. |
 | **Playback** | Gapless between sentences, and abortable mid-word. |
 

@@ -142,7 +142,7 @@ class ConversationEngine:
         self._interrupt.clear()
         self._error = None
         self._set_state(LISTENING)
-        self.backend.start(self._utterances.put, self._on_speech_start)
+        self.backend.start(self._utterances.put, self._on_speech_confirmed)
         self._thread = threading.Thread(
             target=self._process_loop, name="voice-process", daemon=True
         )
@@ -179,8 +179,10 @@ class ConversationEngine:
 
     # -- barge-in ----------------------------------------------------------------------
 
-    def _on_speech_start(self):
-        """Fires as soon as VAD triggers. If the agent is mid-sentence, cut it off."""
+    def _on_speech_confirmed(self):
+        """Fires once the segmenter has heard sustained speech — not on the first triggered
+        frame, so a door slam or the agent's own echo can't cut the reply off. If the agent
+        is mid-sentence when someone really is talking, cut it off."""
         with self._state_lock:
             speaking = self._state in (SPEAKING, THINKING)
         if speaking and self.barge_in:
